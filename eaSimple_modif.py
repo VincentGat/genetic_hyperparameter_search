@@ -27,10 +27,15 @@ you really want them to do.
 
 import random
 from tqdm import tqdm
-import numpy as np
 
 from deap import tools
+import numpy as np
+from concurrent.futures import ProcessPoolExecutor
+import pickle
+from collections import Counter
 
+
+POOLPROCESS = None
 
 def varAnd(population, toolbox, cxpb, mutpb):
     """Part of an evolutionary algorithm applying only the variation part
@@ -145,11 +150,16 @@ def eaSimple(population, toolbox, cxpb, mutpb, ngen, test_fn, stats=None,
        Basic Algorithms and Operators", 2000.
     """
     logbook = tools.Logbook()
-    logbook.header = ['gen', 'nevals'] + (stats.fields if stats else [])
+    logbook.header = ['gen', 'nevals', 'test_perfo', 'best_model', 'nb_features', 'features', 'nb_count', 'rf_count', 'catboost_count', 'lgbm_count', 'tree_count'] + (stats.fields if stats else [])
 
     # Evaluate the individuals with an invalid fitness
     invalid_ind = [ind for ind in population if not ind.fitness.valid]
-    fitnesses = toolbox.map(toolbox.evaluate, invalid_ind)
+    if POOLPROCESS == 1:
+        fitnesses = [toolbox.evaluate(ind) for ind in tqdm(invalid_ind)]
+
+    else:
+        with ProcessPoolExecutor(POOLPROCESS) as executor:
+            fitnesses = list(tqdm(executor.map(toolbox.evaluate, invalid_ind), total=len(invalid_ind)))
     for ind, fit in zip(invalid_ind, fitnesses):
         ind.fitness.values = fit
 
@@ -157,11 +167,23 @@ def eaSimple(population, toolbox, cxpb, mutpb, ngen, test_fn, stats=None,
         halloffame.update(population)
 
     record = stats.compile(population) if stats else {}
-    logbook.record(gen=0, nevals=len(invalid_ind), **record)
+    best = tools.selBest(population, k=1)[0]
+    perfo = test_fn(best)
+    model_count = dict(Counter([str(i.model_family) for i in population]))
+    nb_count = model_count.get('nb', 0)
+    rf_count = model_count.get('rf', 0)
+    catboost_count = model_count.get('catboost', 0)
+    lgbm_count = model_count.get('lgbm', 0)
+    tree_count = model_count.get('tree', 0)
+    logbook.record(gen=0, nevals=len(invalid_ind), test_perfo=perfo, best_model=best.model
+                   , nb_features=np.sum(best.features), features=best.features
+                   , nb_count=nb_count, rf_count=rf_count, catboost_count=catboost_count,lgbm_count=lgbm_count,
+                   tree_count=tree_count, **record)
+    if verbose:
+        print(logbook[0])
 
     # Begin the generational process
-    pbar = tqdm(range(1, ngen + 1), unit='generations')
-    for gen in pbar:
+    for gen in range(1, ngen + 1):
         # Select the next generation individuals
         offspring = toolbox.select(population, len(population))
 
@@ -170,7 +192,13 @@ def eaSimple(population, toolbox, cxpb, mutpb, ngen, test_fn, stats=None,
 
         # Evaluate the individuals with an invalid fitness
         invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-        fitnesses = toolbox.map(toolbox.evaluate, invalid_ind)
+
+        if POOLPROCESS == 1:
+            fitnesses = [toolbox.evaluate(ind) for ind in tqdm(invalid_ind)]
+
+        else:
+            with ProcessPoolExecutor(POOLPROCESS) as executor:
+                fitnesses = list(tqdm(executor.map(toolbox.evaluate, invalid_ind), total=len(invalid_ind)))
         for ind, fit in zip(invalid_ind, fitnesses):
             ind.fitness.values = fit
 
@@ -183,10 +211,22 @@ def eaSimple(population, toolbox, cxpb, mutpb, ngen, test_fn, stats=None,
 
         # Append the current generation statistics to the logbook
         record = stats.compile(population) if stats else {}
-        logbook.record(gen=gen, nevals=len(invalid_ind), **record)
+        best = tools.selBest(population, k=1)[0]
+        perfo = test_fn(best)
+        model_count = dict(Counter([str(i.model_family) for i in population]))
+        nb_count = model_count.get('nb', 0)
+        rf_count = model_count.get('rf', 0)
+        catboost_count = model_count.get('catboost', 0)
+        lgbm_count = model_count.get('lgbm', 0)
+        tree_count = model_count.get('tree', 0)
+        logbook.record(gen=gen, nevals=len(invalid_ind), test_perfo=perfo, best_model=best.model
+                       , nb_features=np.sum(best.features), features=best.features
+                       , nb_count=nb_count, rf_count=rf_count, catboost_count=catboost_count, lgbm_count=lgbm_count
+                       , tree_count=tree_count, **record)
+        with open("log/log3.pkl", 'wb') as handler:
+            pickle.dump(logbook, handler, pickle.HIGHEST_PROTOCOL)
+
         if verbose:
-            best = tools.selBest(population, k=1)[0]
-            perfo = test_fn(best)
-            pbar.set_postfix({'Fitness': perfo, 'Model': best['model_family'], 'Nb_features': np.sum(best['feature_selection'])})
+            print(logbook[gen])
 
     return population, logbook
